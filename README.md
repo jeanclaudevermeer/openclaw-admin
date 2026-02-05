@@ -29,6 +29,10 @@ npm install
 # Set your admin password
 export OPENCLAW_ADMIN_PASSWORD="your-password-here"
 
+# Optional: bind to specific IP (defaults to 127.0.0.1)
+export OPENCLAW_ADMIN_HOST="127.0.0.1"
+export OPENCLAW_ADMIN_PORT="5180"
+
 # Start the server
 npm run dev
 ```

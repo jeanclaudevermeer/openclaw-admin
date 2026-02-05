@@ -16,13 +16,13 @@ const DIST_DIR = join(__dirname, '..', 'dist')
 
 const app = new Hono()
 
-// Server bind IP for CORS
-const BIND_IP = '127.0.0.1'
-const PORT = 5180
+// Server config from environment
+const HOST = process.env.OPENCLAW_ADMIN_HOST || '127.0.0.1'
+const PORT = parseInt(process.env.OPENCLAW_ADMIN_PORT || '5180', 10)
 
 // CORS - restricted to same origin
 app.use('/api/*', cors({
-  origin: `http://${BIND_IP}:${PORT}`,
+  origin: `http://${HOST}:${PORT}`,
   credentials: true,
 }))
 
@@ -610,6 +610,6 @@ wss.on('connection', async (clientWs) => {
 })
 
 // Start server
-httpServer.listen(PORT, BIND_IP, () => {
-  console.log(`OpenClaw Admin running at http://${BIND_IP}:${PORT}`)
+httpServer.listen(PORT, HOST, () => {
+  console.log(`OpenClaw Admin running at http://${HOST}:${PORT}`)
 })
