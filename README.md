@@ -14,7 +14,7 @@ A web-based admin dashboard for [OpenClaw](https://github.com/openclaw/openclaw)
 ## Prerequisites
 
 - Node.js 18+
-- A running OpenClaw gateway (default: `127.0.0.1:<port>`)
+- A running OpenClaw gateway
 
 ## Setup
 

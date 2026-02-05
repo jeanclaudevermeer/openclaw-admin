@@ -54,7 +54,8 @@ let gatewayInfo: { url: string; token: string } | null = null
 async function getGatewayInfo() {
   if (gatewayInfo) return gatewayInfo
   const config = await readConfig()
-  const port = config?.gateway?.port 
+  const port = config?.gateway?.port
+  if (!port) throw new Error('gateway.port not found in openclaw.json')
   const token = config?.gateway?.auth?.token ?? ''
   gatewayInfo = {
     url: `ws://127.0.0.1:${port}`,
@@ -251,7 +252,7 @@ app.get('/api/gateway/status', async (c) => {
   const portInfo = statusInfo.port as { port?: number } | undefined
   const gatewayInfo = statusInfo.gateway as { port?: number; bindMode?: string } | undefined
   const gateway = config?.gateway ?? {}
-  const port = gatewayInfo?.port ?? portInfo?.port ?? gateway?.port 
+  const port = gatewayInfo?.port ?? portInfo?.port ?? gateway?.port
   const mode = gatewayInfo?.bindMode ?? gateway?.mode ?? 'local'
 
   return c.json({ connected, port, mode, agentCount })
