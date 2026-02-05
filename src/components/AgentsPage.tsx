@@ -183,17 +183,9 @@ export function AgentsPage() {
               onClick={() => setSelectedAgentId(agent.id)}
             >
               <div className="relative">
-                {agent.id === 'main' ? (
-                  <img
-                    src="/jean-clawd.jpg"
-                    alt={agent.name}
-                    className="w-10 h-10 rounded-lg object-cover border border-slate-700/50"
-                  />
-                ) : (
-                  <div className="w-10 h-10 rounded-lg bg-slate-800/80 border border-slate-700/50 flex items-center justify-center text-lg">
-                    {agent.emoji ?? '🤖'}
-                  </div>
-                )}
+                <div className="w-10 h-10 rounded-lg bg-slate-800/80 border border-slate-700/50 flex items-center justify-center text-lg">
+                  {agent.emoji ?? '🤖'}
+                </div>
                 {selectedAgentId === agent.id && (
                   <div className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-slate-900" />
                 )}
@@ -228,17 +220,9 @@ export function AgentsPage() {
             {/* Agent Header - Compact */}
             <div className="flex items-center justify-between pb-3 border-b border-slate-800/50">
               <div className="flex items-center gap-3">
-                {selectedAgent.id === 'main' ? (
-                  <img
-                    src="/jean-clawd.jpg"
-                    alt={selectedAgent.name}
-                    className="w-9 h-9 rounded-lg object-cover border border-slate-700/50"
-                  />
-                ) : (
-                  <div className="w-9 h-9 rounded-lg bg-slate-800/80 border border-slate-700/50 flex items-center justify-center text-xl">
-                    {selectedAgent.emoji ?? '🤖'}
-                  </div>
-                )}
+                <div className="w-9 h-9 rounded-lg bg-slate-800/80 border border-slate-700/50 flex items-center justify-center text-xl">
+                  {selectedAgent.emoji ?? '🤖'}
+                </div>
                 <div>
                   <h2 className="text-base font-semibold text-slate-100">
                     {selectedAgent.name}
