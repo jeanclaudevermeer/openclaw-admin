@@ -1,13 +1,45 @@
-import { serve } from '@hono/node-server'
+import { serve, getRequestListener } from '@hono/node-server'
+import { serveStatic } from '@hono/node-server/serve-static'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { readFile, writeFile, readdir, stat, mkdir, rm, cp } from 'fs/promises'
-import { join, resolve } from 'path'
+import { join, resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 import { homedir } from 'os'
 import { execSync } from 'child_process'
+import { createServer } from 'http'
+import { WebSocketServer, WebSocket } from 'ws'
+import { randomUUID } from 'crypto'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const DIST_DIR = join(__dirname, '..', 'dist')
 
 const app = new Hono()
-app.use('/*', cors())
+
+// Server bind IP for CORS
+const BIND_IP = '127.0.0.1'
+const PORT = 5180
+
+// CORS - restricted to same origin
+app.use('/api/*', cors({
+  origin: `http://${BIND_IP}:${PORT}`,
+  credentials: true,
+}))
+
+// Password authentication
+const PASSWORD = process.env.OPENCLAW_ADMIN_PASSWORD
+if (!PASSWORD) {
+  console.error('ERROR: OPENCLAW_ADMIN_PASSWORD environment variable is required')
+  process.exit(1)
+}
+
+app.use('/api/*', async (c, next) => {
+  const providedPassword = c.req.header('X-Password')
+  if (providedPassword !== PASSWORD) {
+    return c.json({ error: 'Unauthorized' }, 401)
+  }
+  return next()
+})
 
 const OPENCLAW_DIR = join(homedir(), '.openclaw')
 const OPENCLAW_CONFIG = join(OPENCLAW_DIR, 'openclaw.json')
@@ -15,6 +47,21 @@ const OPENCLAW_AGENTS = join(OPENCLAW_DIR, 'agents')
 const OPENCLAW_CRON = join(OPENCLAW_DIR, 'cron', 'jobs.json')
 const SKILLS_SOURCE = join(homedir(), 'openclaw', 'skills')
 const ALLOWED_FILES = new Set(['SOUL.md', 'USER.md', 'AGENTS.md', 'MEMORY.md', 'TOOLS.md', 'IDENTITY.md', 'HEARTBEAT.md'])
+
+// Gateway connection cache
+let gatewayInfo: { url: string; token: string } | null = null
+
+async function getGatewayInfo() {
+  if (gatewayInfo) return gatewayInfo
+  const config = await readConfig()
+  const port = config?.gateway?.port 
+  const token = config?.gateway?.auth?.token ?? ''
+  gatewayInfo = {
+    url: `ws://127.0.0.1:${port}`,
+    token,
+  }
+  return gatewayInfo
+}
 
 interface AgentConfig {
   id?: string
@@ -404,4 +451,165 @@ app.get('/api/config', async (c) => {
   return c.json(config)
 })
 
-serve({ fetch: app.fetch, port: 5181 })
+// Serve static files from dist/ (production build)
+app.use('/*', serveStatic({ root: DIST_DIR }))
+
+// SPA fallback - serve index.html for client-side routing
+app.get('*', async (c) => {
+  try {
+    const html = await readFile(join(DIST_DIR, 'index.html'), 'utf-8')
+    return c.html(html)
+  } catch {
+    return c.text('Not found - run npm run build first', 404)
+  }
+})
+
+// Create HTTP server with Hono
+const requestListener = getRequestListener(app.fetch)
+const httpServer = createServer(requestListener)
+
+// WebSocket server for gateway proxy
+const wss = new WebSocketServer({ noServer: true })
+
+httpServer.on('upgrade', async (request, socket, head) => {
+  const url = new URL(request.url || '', `http://${request.headers.host}`)
+
+  // Only handle /ws/gateway path
+  if (url.pathname !== '/ws/gateway') {
+    socket.destroy()
+    return
+  }
+
+  // Check password from query param
+  const providedPassword = url.searchParams.get('password')
+  if (providedPassword !== PASSWORD) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
+    socket.destroy()
+    return
+  }
+
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request)
+  })
+})
+
+let connectionCounter = 0
+let lastConnectionTime = 0
+const MIN_CONNECTION_INTERVAL = 500 // ms
+
+wss.on('connection', async (clientWs) => {
+  const connId = ++connectionCounter
+  const now = Date.now()
+
+  // Rate limit: reject if connecting too fast
+  if (now - lastConnectionTime < MIN_CONNECTION_INTERVAL) {
+    console.log(`[WS Proxy] Client #${connId} rejected (rate limit)`)
+    clientWs.close(1008, 'Rate limited')
+    return
+  }
+  lastConnectionTime = now
+
+  console.log(`[WS Proxy] Client #${connId} connected`)
+
+  let gatewayWs: WebSocket | null = null
+  let connected = false
+
+  try {
+    const { url, token } = await getGatewayInfo()
+    gatewayWs = new WebSocket(url)
+
+    gatewayWs.on('open', () => {
+      console.log('[WS Proxy] Connected to gateway')
+      connected = true
+
+      // Perform handshake automatically
+      const connectFrame = {
+        type: 'req',
+        id: randomUUID(),
+        method: 'connect',
+        params: {
+          minProtocol: 3,
+          maxProtocol: 3,
+          client: {
+            id: 'gateway-client',
+            displayName: 'openclaw-admin',
+            version: '1.0.0',
+            platform: 'linux',
+            mode: 'ui',
+            instanceId: randomUUID(),
+          },
+          auth: { token },
+          role: 'operator',
+          scopes: ['operator.admin'],
+        },
+      }
+      gatewayWs!.send(JSON.stringify(connectFrame))
+    })
+
+    gatewayWs.on('message', (data) => {
+      const msg = data.toString()
+      try {
+        const frame = JSON.parse(msg)
+        console.log(`[WS Proxy] Gateway -> Client: ${frame.type} ${frame.event || frame.method || ''} ${frame.ok !== undefined ? (frame.ok ? 'OK' : 'FAIL') : ''}`)
+      } catch {
+        console.log(`[WS Proxy] Gateway -> Client: (unparseable)`)
+      }
+      // Forward all messages from gateway to client
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.send(msg)
+      }
+    })
+
+    gatewayWs.on('error', (err) => {
+      console.error('[WS Proxy] Gateway error:', err.message)
+      clientWs.close(1011, 'Gateway error')
+    })
+
+    gatewayWs.on('close', (code, reason) => {
+      console.log(`[WS Proxy] Gateway disconnected - code: ${code}, reason: ${reason?.toString() || 'none'}`)
+      if (clientWs.readyState === WebSocket.OPEN) {
+        clientWs.close(1000, 'Gateway closed')
+      }
+    })
+
+  } catch (err) {
+    console.error('[WS Proxy] Failed to connect to gateway:', err)
+    clientWs.close(1011, 'Failed to connect to gateway')
+    return
+  }
+
+  // Forward messages from client to gateway (except connect, which we handle)
+  clientWs.on('message', (data) => {
+    if (!connected || !gatewayWs || gatewayWs.readyState !== WebSocket.OPEN) {
+      return
+    }
+
+    try {
+      const frame = JSON.parse(data.toString())
+      console.log(`[WS Proxy] Client #${connId} -> Gateway: ${frame.method || frame.type}`)
+      // Skip connect requests from client - we already handled it
+      if (frame.method === 'connect') {
+        return
+      }
+      gatewayWs.send(data.toString())
+    } catch {
+      gatewayWs.send(data.toString())
+    }
+  })
+
+  clientWs.on('close', (code, reason) => {
+    console.log(`[WS Proxy] Client disconnected - code: ${code}, reason: ${reason?.toString() || 'none'}`)
+    if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+      gatewayWs.close()
+    }
+  })
+
+  clientWs.on('error', (err) => {
+    console.error('[WS Proxy] Client error:', err.message)
+  })
+})
+
+// Start server
+httpServer.listen(PORT, BIND_IP, () => {
+  console.log(`OpenClaw Admin running at http://${BIND_IP}:${PORT}`)
+})
