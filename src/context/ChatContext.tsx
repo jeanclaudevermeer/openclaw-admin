@@ -80,20 +80,37 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setErrorMsg('')
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws/gateway?password=${encodeURIComponent(password)}`
+    const wsUrl = `${protocol}//${window.location.host}/ws/gateway`
 
     const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
+    let authComplete = false
     let handshakeComplete = false
 
     ws.onopen = () => {
-      console.log('[Chat] WebSocket connected')
+      console.log('[Chat] WebSocket connected, sending auth')
+      // Authenticate via first message instead of URL query param
+      ws.send(JSON.stringify({ type: 'auth', password }))
     }
 
     ws.onmessage = (event) => {
       try {
         const frame: GatewayFrame = JSON.parse(event.data)
+
+        // Handle auth response (first message back from server)
+        if (!authComplete && (frame as Record<string, unknown>).type === 'auth') {
+          authComplete = true
+          if (!(frame as Record<string, unknown>).ok) {
+            connectingRef.current = false
+            setStatus('error')
+            setErrorMsg('Authentication failed')
+            ws.close()
+            return
+          }
+          console.log('[Chat] Authenticated')
+          return
+        }
 
         // Handle connect response
         if (frame.type === 'res' && frame.ok !== undefined && !handshakeComplete) {

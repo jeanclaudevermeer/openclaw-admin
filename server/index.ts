@@ -480,14 +480,7 @@ httpServer.on('upgrade', async (request, socket, head) => {
     return
   }
 
-  // Check password from query param
-  const providedPassword = url.searchParams.get('password')
-  if (providedPassword !== PASSWORD) {
-    socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n')
-    socket.destroy()
-    return
-  }
-
+  // Accept connection - auth happens via first message
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request)
   })
@@ -509,95 +502,127 @@ wss.on('connection', async (clientWs) => {
   }
   lastConnectionTime = now
 
-  console.log(`[WS Proxy] Client #${connId} connected`)
+  console.log(`[WS Proxy] Client #${connId} connected, awaiting auth`)
 
+  let authenticated = false
   let gatewayWs: WebSocket | null = null
   let connected = false
 
-  try {
-    const { url, token } = await getGatewayInfo()
-    gatewayWs = new WebSocket(url)
+  // Auth timeout - close if no auth message within 5 seconds
+  const authTimeout = setTimeout(() => {
+    if (!authenticated) {
+      console.log(`[WS Proxy] Client #${connId} auth timeout`)
+      clientWs.close(1008, 'Auth timeout')
+    }
+  }, 5000)
 
-    gatewayWs.on('open', () => {
-      console.log('[WS Proxy] Connected to gateway')
-      connected = true
+  function connectToGateway() {
+    getGatewayInfo().then(({ url, token }) => {
+      gatewayWs = new WebSocket(url)
 
-      // Perform handshake automatically
-      const connectFrame = {
-        type: 'req',
-        id: randomUUID(),
-        method: 'connect',
-        params: {
-          minProtocol: 3,
-          maxProtocol: 3,
-          client: {
-            id: 'gateway-client',
-            displayName: 'openclaw-admin',
-            version: '1.0.0',
-            platform: 'linux',
-            mode: 'ui',
-            instanceId: randomUUID(),
+      gatewayWs.on('open', () => {
+        console.log('[WS Proxy] Connected to gateway')
+        connected = true
+
+        // Perform handshake automatically
+        const connectFrame = {
+          type: 'req',
+          id: randomUUID(),
+          method: 'connect',
+          params: {
+            minProtocol: 3,
+            maxProtocol: 3,
+            client: {
+              id: 'gateway-client',
+              displayName: 'openclaw-admin',
+              version: '1.0.0',
+              platform: 'linux',
+              mode: 'ui',
+              instanceId: randomUUID(),
+            },
+            auth: { token },
+            role: 'operator',
+            scopes: ['operator.admin'],
           },
-          auth: { token },
-          role: 'operator',
-          scopes: ['operator.admin'],
-        },
-      }
-      gatewayWs!.send(JSON.stringify(connectFrame))
-    })
+        }
+        gatewayWs!.send(JSON.stringify(connectFrame))
+      })
 
-    gatewayWs.on('message', (data) => {
-      const msg = data.toString()
-      try {
-        const frame = JSON.parse(msg)
-        console.log(`[WS Proxy] Gateway -> Client: ${frame.type} ${frame.event || frame.method || ''} ${frame.ok !== undefined ? (frame.ok ? 'OK' : 'FAIL') : ''}`)
-      } catch {
-        console.log(`[WS Proxy] Gateway -> Client: (unparseable)`)
-      }
-      // Forward all messages from gateway to client
-      if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(msg)
-      }
-    })
+      gatewayWs.on('message', (data) => {
+        const msg = data.toString()
+        try {
+          const frame = JSON.parse(msg)
+          console.log(`[WS Proxy] Gateway -> Client: ${frame.type} ${frame.event || frame.method || ''} ${frame.ok !== undefined ? (frame.ok ? 'OK' : 'FAIL') : ''}`)
+        } catch {
+          console.log(`[WS Proxy] Gateway -> Client: (unparseable)`)
+        }
+        // Forward all messages from gateway to client
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(msg)
+        }
+      })
 
-    gatewayWs.on('error', (err) => {
-      console.error('[WS Proxy] Gateway error:', err.message)
-      clientWs.close(1011, 'Gateway error')
-    })
+      gatewayWs.on('error', (err) => {
+        console.error('[WS Proxy] Gateway error:', err.message)
+        clientWs.close(1011, 'Gateway error')
+      })
 
-    gatewayWs.on('close', (code, reason) => {
-      console.log(`[WS Proxy] Gateway disconnected - code: ${code}, reason: ${reason?.toString() || 'none'}`)
-      if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.close(1000, 'Gateway closed')
-      }
+      gatewayWs.on('close', (code, reason) => {
+        console.log(`[WS Proxy] Gateway disconnected - code: ${code}, reason: ${reason?.toString() || 'none'}`)
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.close(1000, 'Gateway closed')
+        }
+      })
+    }).catch((err) => {
+      console.error('[WS Proxy] Failed to connect to gateway:', err)
+      clientWs.close(1011, 'Failed to connect to gateway')
     })
-
-  } catch (err) {
-    console.error('[WS Proxy] Failed to connect to gateway:', err)
-    clientWs.close(1011, 'Failed to connect to gateway')
-    return
   }
 
-  // Forward messages from client to gateway (except connect, which we handle)
   clientWs.on('message', (data) => {
+    const msg = data.toString()
+
+    // First message must be auth
+    if (!authenticated) {
+      clearTimeout(authTimeout)
+      try {
+        const frame = JSON.parse(msg)
+        if (frame.type === 'auth' && frame.password === PASSWORD) {
+          authenticated = true
+          console.log(`[WS Proxy] Client #${connId} authenticated`)
+          clientWs.send(JSON.stringify({ type: 'auth', ok: true }))
+          connectToGateway()
+        } else {
+          console.log(`[WS Proxy] Client #${connId} auth failed`)
+          clientWs.send(JSON.stringify({ type: 'auth', ok: false, error: 'Invalid password' }))
+          clientWs.close(1008, 'Unauthorized')
+        }
+      } catch {
+        clientWs.close(1008, 'Invalid auth frame')
+      }
+      return
+    }
+
+    // Forward authenticated messages to gateway
     if (!connected || !gatewayWs || gatewayWs.readyState !== WebSocket.OPEN) {
       return
     }
 
     try {
-      const frame = JSON.parse(data.toString())
+      const frame = JSON.parse(msg)
       console.log(`[WS Proxy] Client #${connId} -> Gateway: ${frame.method || frame.type}`)
       // Skip connect requests from client - we already handled it
       if (frame.method === 'connect') {
         return
       }
-      gatewayWs.send(data.toString())
+      gatewayWs.send(msg)
     } catch {
-      gatewayWs.send(data.toString())
+      gatewayWs.send(msg)
     }
   })
 
   clientWs.on('close', (code, reason) => {
+    clearTimeout(authTimeout)
     console.log(`[WS Proxy] Client disconnected - code: ${code}, reason: ${reason?.toString() || 'none'}`)
     if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
       gatewayWs.close()
@@ -605,6 +630,7 @@ wss.on('connection', async (clientWs) => {
   })
 
   clientWs.on('error', (err) => {
+    clearTimeout(authTimeout)
     console.error('[WS Proxy] Client error:', err.message)
   })
 })

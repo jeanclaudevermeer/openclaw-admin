@@ -71,7 +71,7 @@ export default defineConfig({
   },
   server: {
     port: 5180,
-    host: '0.0.0.0', // Important for reverse proxy access
+    host: process.env.OPENCLAW_ADMIN_HOST || '127.0.0.1',
     proxy: {
       '/api': {
         target: 'http://localhost:5181',
@@ -384,9 +384,10 @@ Or create a combined script in package.json:
 ## Security Notes
 
 1. **Run locally only** - This dashboard has full access to your OpenClaw config
-2. **No authentication** - Add auth if exposing to network
-3. **File access** - Restricted to workspace and config directories
-4. **Shell execution** - Only executes `openclaw` CLI commands
+2. **Password authentication** - Set `OPENCLAW_ADMIN_PASSWORD` env var (required, server exits without it)
+3. **Bind address** - Defaults to `127.0.0.1`; set `OPENCLAW_ADMIN_HOST` to bind elsewhere
+4. **File access** - Restricted to workspace and config directories
+5. **Shell execution** - Only executes `openclaw` CLI commands
 
 ---
 

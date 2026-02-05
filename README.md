@@ -20,7 +20,7 @@ A web-based admin dashboard for [OpenClaw](https://github.com/openclaw/openclaw)
 
 ```bash
 # Clone the repo
-git clone https://github.com/jeanclaudevermeer/openclaw-admin.git
+git clone https://github.com/openclaw/openclaw-admin.git
 cd openclaw-admin
 
 # Install dependencies
