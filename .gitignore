@@ -1,3 +1,12 @@
+# Test/debug scripts
+test-*.mjs
+test-*.js
+*.test.local.*
+
+# Environment files
+.env
+.env.*
+
 # Logs
 logs
 *.log
